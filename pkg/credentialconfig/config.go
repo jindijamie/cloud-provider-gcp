@@ -17,6 +17,7 @@ limitations under the License.
 package credentialconfig
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -190,6 +191,42 @@ func (he *HTTPError) Error() string {
 // ReadURL read contents from given url
 func ReadURL(url string, client *http.Client, header *http.Header) (body []byte, err error) {
 	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if header != nil {
+		req.Header = *header
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		klog.V(2).Infof("body of failing http response: %v", resp.Body)
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			URL:        url,
+		}
+	}
+
+	limitedReader := &io.LimitedReader{R: resp.Body, N: maxReadLength}
+	contents, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, err
+	}
+
+	if limitedReader.N <= 0 {
+		return nil, errors.New("the read limit is reached")
+	}
+
+	return contents, nil
+}
+
+// ReadURLWithContext read contents from given url with context
+func ReadURLWithContext(ctx context.Context, url string, client *http.Client, header *http.Header) (body []byte, err error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}

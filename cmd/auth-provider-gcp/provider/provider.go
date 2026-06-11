@@ -29,29 +29,37 @@ import (
 )
 
 const (
-	cacheImage                = "image"
-	cacheRegistry             = "registry"
-	cacheGlobal               = "global"
-	cacheDurationKey          = "KUBE_SIDECAR_CACHE_DURATION"
-	cacheTypeKey              = "KUBE_SIDECAR_CACHE_TYPE"
-	metadataHTTPClientTimeout = time.Second * 10
-	apiKind                   = "CredentialProviderResponse"
-	apiVersion                = "credentialprovider.kubelet.k8s.io/v1"
+	cacheImage       = "image"
+	cacheRegistry    = "registry"
+	cacheGlobal      = "global"
+	cacheDurationKey = "KUBE_SIDECAR_CACHE_DURATION"
+	cacheTypeKey     = "KUBE_SIDECAR_CACHE_TYPE"
+	apiKind          = "CredentialProviderResponse"
+	apiVersion       = "credentialprovider.kubelet.k8s.io/v1"
+
+	gceMetadataTimeout = time.Second * 5
+	stsTimeout         = time.Second * 30
 )
 
 // MakeRegistryProvider returns a ContainerRegistryProvider with the given transport.
-func MakeRegistryProvider(transport *http.Transport) *gcpcredential.ContainerRegistryProvider {
-	httpClient := makeHTTPClient(transport)
+func MakeRegistryProvider(transport *http.Transport, token string, annotations map[string]string, identityProvider string) *gcpcredential.ContainerRegistryProvider {
+	// Registry provider needs to call STS (30s) and GCE metadata (5s).
+	// We set the client timeout to 35s to accommodate both, but individual calls
+	// will be capped by context timeouts in the provider.
+	httpClient := makeHTTPClient(transport, gceMetadataTimeout+stsTimeout)
 	provider := &gcpcredential.ContainerRegistryProvider{
-		MetadataProvider:     gcpcredential.MetadataProvider{Client: httpClient},
-		UseRegistryFromImage: true,
+		MetadataProvider:          gcpcredential.MetadataProvider{Client: httpClient},
+		UseRegistryFromImage:      true,
+		ServiceAccountToken:       token,
+		ServiceAccountAnnotations: annotations,
+		IdentityProvider:          identityProvider,
 	}
 	return provider
 }
 
 // MakeDockerConfigProvider returns a DockerConfigKeyProvider with the given transport.
 func MakeDockerConfigProvider(transport *http.Transport) *gcpcredential.DockerConfigKeyProvider {
-	httpClient := makeHTTPClient(transport)
+	httpClient := makeHTTPClient(transport, gceMetadataTimeout)
 	provider := &gcpcredential.DockerConfigKeyProvider{
 		MetadataProvider: gcpcredential.MetadataProvider{Client: httpClient},
 	}
@@ -60,17 +68,17 @@ func MakeDockerConfigProvider(transport *http.Transport) *gcpcredential.DockerCo
 
 // MakeDockerConfigURLProvider returns a DockerConfigURLKeyProvider with the given transport.
 func MakeDockerConfigURLProvider(transport *http.Transport) *gcpcredential.DockerConfigURLKeyProvider {
-	httpClient := makeHTTPClient(transport)
+	httpClient := makeHTTPClient(transport, gceMetadataTimeout)
 	provider := &gcpcredential.DockerConfigURLKeyProvider{
 		MetadataProvider: gcpcredential.MetadataProvider{Client: httpClient},
 	}
 	return provider
 }
 
-func makeHTTPClient(transport *http.Transport) *http.Client {
+func makeHTTPClient(transport *http.Transport, timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: transport,
-		Timeout:   metadataHTTPClientTimeout,
+		Timeout:   timeout,
 	}
 }
 
@@ -109,8 +117,8 @@ func getCacheKeyType() (credentialproviderapi.PluginCacheKeyType, error) {
 }
 
 // GetResponse queries the given provider for credentials.
-func GetResponse(image string, provider credentialconfig.DockerConfigProvider) (*credentialproviderapi.CredentialProviderResponse, error) {
-	cfg := provider.Provide(image)
+func GetResponse(req credentialproviderapi.CredentialProviderRequest, provider credentialconfig.DockerConfigProvider) (*credentialproviderapi.CredentialProviderResponse, error) {
+	cfg := provider.Provide(req.Image)
 	response := &credentialproviderapi.CredentialProviderResponse{Auth: make(map[string]credentialproviderapi.AuthConfig)}
 	for url, dockerConfig := range cfg {
 		response.Auth[url] = credentialproviderapi.AuthConfig{Username: dockerConfig.Username, Password: dockerConfig.Password}
