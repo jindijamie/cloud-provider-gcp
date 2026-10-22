@@ -27,8 +27,11 @@ func TestProvide_WorkloadIdentity(t *testing.T) {
 		metadataResponses         map[string]string
 		stsResponse               string
 		wantAudience              string
+		wantSTSHost               string
 		expectedToken             string
 		projectID                 string
+		workloadPool              string
+		stsEndpoint               string
 	}{
 		{
 			name:                "Direct Access Mode (Success)",
@@ -40,7 +43,55 @@ func TestProvide_WorkloadIdentity(t *testing.T) {
 			projectID:     "my-project",
 			stsResponse:   `{"access_token": "federated-token-xyz", "expires_in": 3600, "token_type": "Bearer"}`,
 			wantAudience:  "identitynamespace:my-project.svc.id.goog:https://container.googleapis.com/v1/projects/my-project/locations/us-central1/clusters/my-cluster",
+			wantSTSHost:   "sts.googleapis.com",
 			expectedToken: "federated-token-xyz",
+		},
+		{
+			name:                "Direct Access Mode - TPC Workload Pool and Universe Domain Metadata (Success)",
+			identityProvider:    "https://container.apis-tpclp.goog/v1/projects/tpclp:my-project/locations/u-us-prp1/clusters/my-cluster",
+			serviceAccountToken: validToken,
+			serviceAccountAnnotations: map[string]string{
+				"iam.gke.io/enable-wi-image-pull": "true",
+			},
+			projectID:    "my-project",
+			workloadPool: "my-project.tpclp.svc.id.goog",
+			metadataResponses: map[string]string{
+				"universe/universe-domain": "apis-tpclp.goog\n",
+			},
+			stsResponse:   `{"access_token": "federated-token-tpc", "expires_in": 3600, "token_type": "Bearer"}`,
+			wantAudience:  "identitynamespace:my-project.tpclp.svc.id.goog:https://container.apis-tpclp.goog/v1/projects/tpclp:my-project/locations/u-us-prp1/clusters/my-cluster",
+			wantSTSHost:   "sts.apis-tpclp.goog",
+			expectedToken: "federated-token-tpc",
+		},
+		{
+			name:                "Direct Access Mode - Explicit STS Endpoint Override (Success)",
+			identityProvider:    "https://container.apis-tpclp.goog/v1/projects/tpclp:my-project/locations/u-us-prp1/clusters/my-cluster",
+			serviceAccountToken: validToken,
+			serviceAccountAnnotations: map[string]string{
+				"iam.gke.io/enable-wi-image-pull": "true",
+			},
+			workloadPool:  "my-project.tpclp.svc.id.goog",
+			stsEndpoint:   "https://sts.custom-universe.goog/v1/token",
+			stsResponse:   `{"access_token": "federated-token-override", "expires_in": 3600, "token_type": "Bearer"}`,
+			wantAudience:  "identitynamespace:my-project.tpclp.svc.id.goog:https://container.apis-tpclp.goog/v1/projects/tpclp:my-project/locations/u-us-prp1/clusters/my-cluster",
+			wantSTSHost:   "sts.custom-universe.goog",
+			expectedToken: "federated-token-override",
+		},
+		{
+			name:                "Direct Access Mode - Default Universe Domain Metadata (Success)",
+			identityProvider:    "https://container.googleapis.com/v1/projects/my-project/locations/us-central1/clusters/my-cluster",
+			serviceAccountToken: validToken,
+			serviceAccountAnnotations: map[string]string{
+				"iam.gke.io/enable-wi-image-pull": "true",
+			},
+			workloadPool: "my-project.svc.id.goog",
+			metadataResponses: map[string]string{
+				"universe/universe-domain": "googleapis.com",
+			},
+			stsResponse:   `{"access_token": "federated-token-gdu", "expires_in": 3600, "token_type": "Bearer"}`,
+			wantAudience:  "identitynamespace:my-project.svc.id.goog:https://container.googleapis.com/v1/projects/my-project/locations/us-central1/clusters/my-cluster",
+			wantSTSHost:   "sts.googleapis.com",
+			expectedToken: "federated-token-gdu",
 		},
 		{
 			name:                "Fallback to Node SA (Unannotated SA, bypass STS)",
@@ -156,7 +207,11 @@ func TestProvide_WorkloadIdentity(t *testing.T) {
 					}
 
 					// Handle STS Requests
-					if req.URL.Host == "sts.googleapis.com" && req.URL.Path == "/v1/token" {
+					expectedSTSHost := tc.wantSTSHost
+					if expectedSTSHost == "" {
+						expectedSTSHost = "sts.googleapis.com"
+					}
+					if req.URL.Host == expectedSTSHost && req.URL.Path == "/v1/token" {
 						if tc.stsResponse == "error" {
 							return &http.Response{
 								StatusCode: http.StatusBadRequest,
@@ -206,6 +261,8 @@ func TestProvide_WorkloadIdentity(t *testing.T) {
 			provider.ServiceAccountAnnotations = tc.serviceAccountAnnotations
 			provider.IdentityProvider = tc.identityProvider
 			provider.ProjectID = tc.projectID
+			provider.WorkloadPool = tc.workloadPool
+			provider.STSEndpoint = tc.stsEndpoint
 
 			cfg := provider.Provide("us-central1-docker.pkg.dev/my-project/my-repo/my-image:latest")
 

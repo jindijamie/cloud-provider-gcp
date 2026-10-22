@@ -84,7 +84,7 @@ func TestContainerRegistry(t *testing.T) {
 			return url.Parse(server.URL + req.URL.Path)
 		},
 	})
-	provider := MakeRegistryProvider(transport, "", nil, "", "")
+	provider := MakeRegistryProvider(transport, "", nil, "", "", "", "")
 	response, err := GetResponse(credentialproviderapi.CredentialProviderRequest{Image: dummyImage}, provider)
 	if err != nil {
 		t.Fatalf("Unexpected error while getting response: %s", err.Error())
@@ -201,7 +201,7 @@ func TestContainerRegistry_WorkloadIdentity(t *testing.T) {
 
 	provider := MakeRegistryProvider(transport, ksaToken, map[string]string{
 		"iam.gke.io/enable-wi-image-pull": "true",
-	}, "https://container.googleapis.com/v1/projects/my-project/locations/us-central1/clusters/my-cluster", "my-project")
+	}, "https://container.googleapis.com/v1/projects/my-project/locations/us-central1/clusters/my-cluster", "my-project", "", "")
 
 	req := credentialproviderapi.CredentialProviderRequest{
 		Image: dummyImage,
@@ -343,7 +343,7 @@ func TestMakeRegistryProvider(t *testing.T) {
 		"test-annotation": "test-value",
 	}
 
-	provider := MakeRegistryProvider(transport, token, annotations, "test-provider", "test-project-123")
+	provider := MakeRegistryProvider(transport, token, annotations, "test-provider", "test-project-123", "test-project-123.tpclp.svc.id.goog", "https://sts.apis-tpclp.goog/v1/token")
 
 	if provider.KSAToken != token {
 		t.Errorf("expected KSAToken to be %q, got %q", token, provider.KSAToken)
@@ -360,5 +360,13 @@ func TestMakeRegistryProvider(t *testing.T) {
 
 	if provider.ProjectID != "test-project-123" {
 		t.Errorf("expected ProjectID to be %q, got %q", "test-project-123", provider.ProjectID)
+	}
+
+	if provider.WorkloadPool != "test-project-123.tpclp.svc.id.goog" {
+		t.Errorf("expected WorkloadPool to be %q, got %q", "test-project-123.tpclp.svc.id.goog", provider.WorkloadPool)
+	}
+
+	if provider.STSEndpoint != "https://sts.apis-tpclp.goog/v1/token" {
+		t.Errorf("expected STSEndpoint to be %q, got %q", "https://sts.apis-tpclp.goog/v1/token", provider.STSEndpoint)
 	}
 }

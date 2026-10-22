@@ -39,11 +39,12 @@ const (
 	// DockerConfigKey is the URL of the dockercfg metadata key used by DockerConfigKeyProvider.
 	DockerConfigKey = metadataAttributes + "google-dockercfg"
 	// DockerConfigURLKey is the URL of the dockercfg metadata key used by DockerConfigURLKeyProvider.
-	DockerConfigURLKey = metadataAttributes + "google-dockercfg-url"
-	serviceAccounts    = metadataURL + "instance/service-accounts/"
-	metadataScopes     = serviceAccounts + "default/scopes"
-	metadataToken      = serviceAccounts + "default/token"
-	metadataEmail      = serviceAccounts + "default/email"
+	DockerConfigURLKey     = metadataAttributes + "google-dockercfg-url"
+	serviceAccounts        = metadataURL + "instance/service-accounts/"
+	metadataScopes         = serviceAccounts + "default/scopes"
+	metadataToken          = serviceAccounts + "default/token"
+	metadataEmail          = serviceAccounts + "default/email"
+	metadataUniverseDomain = metadataURL + "universe/universe-domain"
 	// StorageScopePrefix is the prefix checked by ContainerRegistryProvider.Enabled.
 	StorageScopePrefix       = "https://www.googleapis.com/auth/devstorage"
 	cloudPlatformScopePrefix = "https://www.googleapis.com/auth/cloud-platform"
@@ -51,7 +52,8 @@ const (
 	// EnableWIImagePullAnnotation is the KSA annotation key to opt-in to Workload Identity image pulling
 	EnableWIImagePullAnnotation = "iam.gke.io/enable-wi-image-pull"
 	// googleSTSEndpoint is the GCP STS token exchange endpoint
-	googleSTSEndpoint = "https://sts.googleapis.com/v1/token"
+	googleSTSEndpoint     = "https://sts.googleapis.com/v1/token"
+	defaultUniverseDomain = "googleapis.com"
 )
 
 // GCEProductNameFile is the product file path that contains the cloud service name.
@@ -98,6 +100,8 @@ type ContainerRegistryProvider struct {
 	ServiceAccountAnnotations map[string]string
 	IdentityProvider          string
 	ProjectID                 string
+	WorkloadPool              string
+	STSEndpoint               string
 }
 
 // Returns true if it finds a local GCE VM.
@@ -341,13 +345,17 @@ func (g *ContainerRegistryProvider) populateConfig(cfg credentialconfig.DockerCo
 
 // executeWorkloadIdentityExchange handles the direct workload identity token exchange
 func (g *ContainerRegistryProvider) executeWorkloadIdentityExchange(ctx context.Context, image string) (string, error) {
-	if g.ProjectID == "" {
-		return "", fmt.Errorf("project-id must be configured for Workload Identity exchange")
+	workloadPool := g.WorkloadPool
+	if workloadPool == "" {
+		if g.ProjectID == "" {
+			return "", fmt.Errorf("either workload-pool or project-id must be configured for Workload Identity exchange")
+		}
+		workloadPool = fmt.Sprintf("%s.svc.id.goog", g.ProjectID)
 	}
 
 	// Trade KSA token for a Google Federated Token via STS
-	klog.V(4).Infof("auth-provider-gcp: Executing STS exchange for Project ID: %s", g.ProjectID)
-	federatedToken, err := g.exchangeKSATokenForFederated(ctx, g.ProjectID)
+	klog.V(4).Infof("auth-provider-gcp: Executing STS exchange for Workload Pool: %s", workloadPool)
+	federatedToken, err := g.exchangeKSATokenForFederated(ctx, workloadPool)
 	if err != nil {
 		return "", fmt.Errorf("failed KSA->Federated STS exchange: %w", err)
 	}
@@ -356,9 +364,9 @@ func (g *ContainerRegistryProvider) executeWorkloadIdentityExchange(ctx context.
 	return federatedToken, nil
 }
 
-func (g *ContainerRegistryProvider) exchangeKSATokenForFederated(ctx context.Context, projectID string) (string, error) {
+func (g *ContainerRegistryProvider) exchangeKSATokenForFederated(ctx context.Context, workloadPool string) (string, error) {
 	// Audience format: identitynamespace:<POOL_ID>:<PROVIDER_URL>
-	audience := fmt.Sprintf("identitynamespace:%s.svc.id.goog:%s", projectID, g.IdentityProvider)
+	audience := fmt.Sprintf("identitynamespace:%s:%s", workloadPool, g.IdentityProvider)
 	klog.V(4).Infof("auth-provider-gcp: Constructed STS Full Audience: %s", audience)
 
 	payload := stsTokenExchangeRequest{
@@ -373,13 +381,29 @@ func (g *ContainerRegistryProvider) exchangeKSATokenForFederated(ctx context.Con
 	return g.callSTSEndpoint(ctx, payload)
 }
 
+func (g *ContainerRegistryProvider) resolveSTSEndpoint() string {
+	if g.STSEndpoint != "" {
+		return g.STSEndpoint
+	}
+	universeBytes, err := credentialconfig.ReadURL(metadataUniverseDomain, g.Client, metadataHeader)
+	if err != nil {
+		klog.V(4).Infof("auth-provider-gcp: could not read universe-domain from metadata (%v), defaulting to %s", err, googleSTSEndpoint)
+		return googleSTSEndpoint
+	}
+	universeDomain := strings.TrimSpace(string(universeBytes))
+	if universeDomain == "" || universeDomain == defaultUniverseDomain {
+		return googleSTSEndpoint
+	}
+	return fmt.Sprintf("https://sts.%s/v1/token", universeDomain)
+}
+
 func (g *ContainerRegistryProvider) callSTSEndpoint(ctx context.Context, payload stsTokenExchangeRequest) (string, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", googleSTSEndpoint, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", g.resolveSTSEndpoint(), bytes.NewBuffer(body))
 	if err != nil {
 		return "", err
 	}
