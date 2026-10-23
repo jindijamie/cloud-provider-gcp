@@ -149,9 +149,9 @@ func getCredentials(options CredentialOptions) error {
 func defineFlags(credCmd *cobra.Command, options *CredentialOptions) {
 	credCmd.Flags().StringVarP(&options.AuthFlow, "authFlow", "a", gcrAuthFlow, fmt.Sprintf("authentication flow (valid values are %q, %q, and %q)", gcrAuthFlow, dockerConfigAuthFlow, dockerConfigURLAuthFlow))
 	credCmd.Flags().StringVar(&options.IdentityProvider, "identity-provider", "", "Target Identity Provider URL to request federated tokens from. Only takes effect when --authFlow=gcr. If configured, it enables Workload Identity flow.")
-	credCmd.Flags().StringVar(&options.ProjectID, "project-id", "", "The GCP Project ID. Used to construct the default <project-id>.svc.id.goog workload pool if --workload-pool is not set.")
-	credCmd.Flags().StringVar(&options.WorkloadPool, "workload-pool", "", "The Workload Identity pool (e.g. <project-id>.svc.id.goog or <project-id>.<universe>.svc.id.goog). Takes precedence over --project-id.")
-	credCmd.Flags().StringVar(&options.STSEndpoint, "sts-endpoint", "", "Optional override for the Security Token Service (STS) token exchange endpoint URL.")
+	credCmd.Flags().StringVar(&options.ProjectID, "project-id", "", "The GCP Project ID. Only used when --workload-pool is not set, to construct the default <project-id>.svc.id.goog workload pool; ignored if --workload-pool is set. Either --workload-pool or --project-id is required when --identity-provider is set.")
+	credCmd.Flags().StringVar(&options.WorkloadPool, "workload-pool", "", "The Workload Identity pool used in the STS audience (e.g. <project-id>.svc.id.goog, or <project-id>.<universe>.svc.id.goog in non-default universes). Takes precedence over --project-id when both are set. Either --workload-pool or --project-id is required when --identity-provider is set.")
+	credCmd.Flags().StringVar(&options.STSEndpoint, "sts-endpoint", "", "Optional override for the Security Token Service (STS) token exchange endpoint URL. If unset, it is derived from the GCE metadata universe/universe-domain value as https://sts.<universe-domain>/v1/token, falling back to https://sts.googleapis.com/v1/token.")
 }
 
 func validateFlags(options *CredentialOptions) error {
