@@ -20,9 +20,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -381,29 +383,53 @@ func (g *ContainerRegistryProvider) exchangeKSATokenForFederated(ctx context.Con
 	return g.callSTSEndpoint(ctx, payload)
 }
 
-func (g *ContainerRegistryProvider) resolveSTSEndpoint() string {
+// NormalizeSTSEndpoint validates an STS endpoint URL override and defaults an empty or "/" path to "/v1/token".
+func NormalizeSTSEndpoint(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid STS endpoint %q: %w", rawURL, err)
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("invalid STS endpoint %q: must be an https URL with a non-empty host", rawURL)
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/v1/token"
+	}
+	return u.String(), nil
+}
+
+func (g *ContainerRegistryProvider) resolveSTSEndpoint() (string, error) {
 	if g.STSEndpoint != "" {
-		return g.STSEndpoint
+		return NormalizeSTSEndpoint(g.STSEndpoint)
 	}
 	universeBytes, err := credentialconfig.ReadURL(metadataUniverseDomain, g.Client, metadataHeader)
 	if err != nil {
-		klog.V(4).Infof("auth-provider-gcp: could not read universe-domain from metadata (%v), defaulting to %s", err, googleSTSEndpoint)
-		return googleSTSEndpoint
+		var httpErr *credentialconfig.HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+			klog.V(4).Infof("auth-provider-gcp: universe-domain not defined in metadata (404), defaulting to %s", googleSTSEndpoint)
+			return googleSTSEndpoint, nil
+		}
+		return "", fmt.Errorf("failed to read universe-domain from metadata: %w", err)
 	}
 	universeDomain := strings.TrimSpace(string(universeBytes))
 	if universeDomain == "" || universeDomain == defaultUniverseDomain {
-		return googleSTSEndpoint
+		return googleSTSEndpoint, nil
 	}
-	return fmt.Sprintf("https://sts.%s/v1/token", universeDomain)
+	return fmt.Sprintf("https://sts.%s/v1/token", universeDomain), nil
 }
 
 func (g *ContainerRegistryProvider) callSTSEndpoint(ctx context.Context, payload stsTokenExchangeRequest) (string, error) {
+	stsEndpoint, err := g.resolveSTSEndpoint()
+	if err != nil {
+		return "", err
+	}
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", g.resolveSTSEndpoint(), bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", stsEndpoint, bytes.NewBuffer(body))
 	if err != nil {
 		return "", err
 	}

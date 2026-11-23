@@ -29,6 +29,7 @@ import (
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/cloud-provider-gcp/cmd/auth-provider-gcp/provider"
 	"k8s.io/cloud-provider-gcp/pkg/credentialconfig"
+	"k8s.io/cloud-provider-gcp/pkg/gcpcredential"
 	klog "k8s.io/klog/v2"
 	credentialproviderapi "k8s.io/kubelet/pkg/apis/credentialprovider/v1"
 )
@@ -50,6 +51,9 @@ type CredentialOptions struct {
 
 // ErrWorkloadPoolOrProjectIDRequired is returned when --identity-provider is set but neither --workload-pool nor --project-id is set.
 var ErrWorkloadPoolOrProjectIDRequired = errors.New("either --workload-pool or --project-id is required when --identity-provider is set")
+
+// ErrInvalidSTSEndpoint is returned when --sts-endpoint is not a valid https URL.
+var ErrInvalidSTSEndpoint = errors.New("invalid --sts-endpoint")
 
 // AuthFlowFlagError represents an error that occurred during flag validation.
 type AuthFlowFlagError struct {
@@ -151,7 +155,7 @@ func defineFlags(credCmd *cobra.Command, options *CredentialOptions) {
 	credCmd.Flags().StringVar(&options.IdentityProvider, "identity-provider", "", "Target Identity Provider URL to request federated tokens from. Only takes effect when --authFlow=gcr. If configured, it enables Workload Identity flow.")
 	credCmd.Flags().StringVar(&options.ProjectID, "project-id", "", "The GCP Project ID. Only used when --workload-pool is not set, to construct the default <project-id>.svc.id.goog workload pool; ignored if --workload-pool is set. Either --workload-pool or --project-id is required when --identity-provider is set.")
 	credCmd.Flags().StringVar(&options.WorkloadPool, "workload-pool", "", "The Workload Identity pool used in the STS audience (e.g. <project-id>.svc.id.goog, or <project-id>.<universe>.svc.id.goog in non-default universes). Takes precedence over --project-id when both are set. Either --workload-pool or --project-id is required when --identity-provider is set.")
-	credCmd.Flags().StringVar(&options.STSEndpoint, "sts-endpoint", "", "Optional override for the Security Token Service (STS) token exchange endpoint URL. If unset, it is derived from the GCE metadata universe/universe-domain value as https://sts.<universe-domain>/v1/token, falling back to https://sts.googleapis.com/v1/token.")
+	credCmd.Flags().StringVar(&options.STSEndpoint, "sts-endpoint", "", "Optional override for the Security Token Service (STS) endpoint URL (accepts https://<host> or https://<host>/v1/token). If unset, it is derived from GCE metadata universe/universe-domain as https://sts.<universe-domain>/v1/token, falling back to https://sts.googleapis.com/v1/token when universe-domain is not defined (404).")
 }
 
 func validateFlags(options *CredentialOptions) error {
@@ -163,6 +167,13 @@ func validateFlags(options *CredentialOptions) error {
 	}
 	if options.IdentityProvider != "" && options.WorkloadPool == "" && options.ProjectID == "" {
 		return ErrWorkloadPoolOrProjectIDRequired
+	}
+	if options.STSEndpoint != "" {
+		normalized, err := gcpcredential.NormalizeSTSEndpoint(options.STSEndpoint)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidSTSEndpoint, err)
+		}
+		options.STSEndpoint = normalized
 	}
 	return nil
 }

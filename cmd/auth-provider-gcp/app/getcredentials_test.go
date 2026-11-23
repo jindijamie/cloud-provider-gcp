@@ -46,6 +46,10 @@ func TestValidateAuthFlow(t *testing.T) {
 		{Name: "identity-provider without workload-pool or project-id with gcr flow", Options: CredentialOptions{AuthFlow: gcrAuthFlow, IdentityProvider: "https://container.googleapis.com/..."}, Error: ErrWorkloadPoolOrProjectIDRequired},
 		{Name: "identity-provider without workload-pool or project-id with dockercfg flow", Options: CredentialOptions{AuthFlow: dockerConfigAuthFlow, IdentityProvider: "https://container.googleapis.com/..."}, Error: ErrWorkloadPoolOrProjectIDRequired},
 		{Name: "identity-provider without workload-pool or project-id with dockercfg-url flow", Options: CredentialOptions{AuthFlow: dockerConfigURLAuthFlow, IdentityProvider: "https://container.googleapis.com/..."}, Error: ErrWorkloadPoolOrProjectIDRequired},
+		{Name: "valid sts-endpoint base URL", Options: CredentialOptions{AuthFlow: gcrAuthFlow, IdentityProvider: "https://container.apis-tpclp.goog/...", WorkloadPool: "my-project.tpclp.svc.id.goog", STSEndpoint: "https://sts.apis-tpclp.goog"}},
+		{Name: "valid sts-endpoint full token URL", Options: CredentialOptions{AuthFlow: gcrAuthFlow, IdentityProvider: "https://container.apis-tpclp.goog/...", WorkloadPool: "my-project.tpclp.svc.id.goog", STSEndpoint: "https://sts.apis-tpclp.goog/v1/token"}},
+		{Name: "invalid non-https sts-endpoint", Options: CredentialOptions{AuthFlow: gcrAuthFlow, IdentityProvider: "https://container.apis-tpclp.goog/...", WorkloadPool: "my-project.tpclp.svc.id.goog", STSEndpoint: "http://sts.apis-tpclp.goog/v1/token"}, Error: ErrInvalidSTSEndpoint},
+		{Name: "invalid sts-endpoint missing host", Options: CredentialOptions{AuthFlow: gcrAuthFlow, IdentityProvider: "https://container.apis-tpclp.goog/...", WorkloadPool: "my-project.tpclp.svc.id.goog", STSEndpoint: "https:///v1/token"}, Error: ErrInvalidSTSEndpoint},
 	}
 	for _, tc := range tests {
 		t.Run(tc.Name, func(t *testing.T) {

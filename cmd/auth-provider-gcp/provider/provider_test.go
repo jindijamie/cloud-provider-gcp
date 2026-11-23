@@ -226,6 +226,93 @@ func TestContainerRegistry_WorkloadIdentity(t *testing.T) {
 	}
 }
 
+func TestContainerRegistry_WorkloadIdentity_TPC(t *testing.T) {
+	tpcImage := "docker.pkg-tpclp.goog/tpclp-system/repo/pause:latest"
+	tpcRegistryURL := "docker.pkg-tpclp.goog"
+
+	ksaToken := "dummyHeader.eyJpc3MiOiAiaHR0cHM6Ly9jb250YWluZXIuYXBpcy10cGNscC5nb29nL3YxL3Byb2plY3RzL3RwY2xwOm15LXByb2plY3QvbG9jYXRpb25zL3UtdXMtcHJwMS9jbHVzdGVycy9teS1jbHVzdGVyIn0.dummySignature"
+	federatedToken := "federated-token-tpc"
+
+	metadataServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/computeMetadata/v1/universe/universe-domain":
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "apis-tpclp.goog\n")
+		default:
+			http.Error(w, fmt.Sprintf("unexpected metadata path %s", r.URL.Path), http.StatusNotFound)
+		}
+	}))
+	defer metadataServer.Close()
+
+	stsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/token" {
+			http.Error(w, fmt.Sprintf("unexpected STS path %s", r.URL.Path), http.StatusNotFound)
+			return
+		}
+		var reqPayload struct {
+			Audience     string `json:"audience"`
+			SubjectToken string `json:"subject_token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqPayload); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		expectedAudience := "identitynamespace:my-project.tpclp.svc.id.goog:https://container.apis-tpclp.goog/v1/projects/tpclp:my-project/locations/u-us-prp1/clusters/my-cluster"
+		if reqPayload.Audience != expectedAudience {
+			http.Error(w, fmt.Sprintf("unexpected audience %q", reqPayload.Audience), http.StatusBadRequest)
+			return
+		}
+		if reqPayload.SubjectToken != ksaToken {
+			http.Error(w, fmt.Sprintf("unexpected subject token %q", reqPayload.SubjectToken), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token": %q, "expires_in": 3600, "token_type": "Bearer"}`, federatedToken)
+	}))
+	defer stsServer.Close()
+
+	_, metadataPort, _ := net.SplitHostPort(metadataServer.Listener.Addr().String())
+	_, stsPort, _ := net.SplitHostPort(stsServer.Listener.Addr().String())
+
+	transport := utilnet.SetTransportDefaults(&http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr == "metadata.google.internal.:80" || addr == "metadata.google.internal:80" {
+				return net.Dial(network, net.JoinHostPort("127.0.0.1", metadataPort))
+			}
+			if addr == "sts.apis-tpclp.goog:443" {
+				return net.Dial(network, net.JoinHostPort("127.0.0.1", stsPort))
+			}
+			return nil, fmt.Errorf("unexpected outbound connection to %s", addr)
+		},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	})
+
+	provider := MakeRegistryProvider(
+		transport,
+		ksaToken,
+		map[string]string{"iam.gke.io/enable-wi-image-pull": "true"},
+		"https://container.apis-tpclp.goog/v1/projects/tpclp:my-project/locations/u-us-prp1/clusters/my-cluster",
+		"",
+		"my-project.tpclp.svc.id.goog",
+		"",
+	)
+
+	response, err := GetResponse(credentialproviderapi.CredentialProviderRequest{Image: tpcImage}, provider)
+	if err != nil {
+		t.Fatalf("Unexpected error while getting response: %v", err)
+	}
+	auth, ok := response.Auth[tpcRegistryURL]
+	if !ok {
+		t.Fatalf("Expected registry %s in response.Auth, got %v", tpcRegistryURL, response.Auth)
+	}
+	if auth.Username != expectedUsername || auth.Password != federatedToken {
+		t.Errorf("Unexpected auth config for %s: got %+v", tpcRegistryURL, auth)
+	}
+}
+
 func TestConfigProvider(t *testing.T) {
 	// Taken from from pkg/credentialprovider/gcp/metadata_test.go in kubernetes/kubernetes
 	registryURL := "hello.kubernetes.io"
